@@ -1,0 +1,9 @@
+body {
+    background-color: #f9f9f9;
+}
+h1 {
+    font-weight: 600;
+}
+.table th, .table td {
+    vertical-align: middle;
+}
