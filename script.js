@@ -2,8 +2,7 @@
 // This script powers the multi‑page household expense tracker. It manages state,
 // renders views, handles filters and sorting, and coordinates handovers and history.
 
-// Define members, categories and payment methods.  Updated to include Ashmi
-// instead of Asmi and to use a new label "Responsible" for splitting expenses.
+// Define members, categories and payment methods. 
 const members = ['Asim', 'Appy', 'Chire', 'Priyash', 'Pratikshya', 'Ashmi'];
 const categories = ['Groceries', 'Bills/Utilities', 'Entertainment', 'Dining Out', 'Transport', 'Miscellaneous'];
 const paymentMethods = ['Cash', 'Card'];
@@ -41,9 +40,7 @@ async function initSupabase() {
     } catch (err) {
         console.warn('Could not fetch Supabase credentials from /api/env:', err);
     }
-    // Fall back to global variables if fetch failed or returned nothing
-    if (!url) url = typeof window !== 'undefined' && window.SUPABASE_URL ? window.SUPABASE_URL : 'YOUR_SUPABASE_URL';
-    if (!key) key = typeof window !== 'undefined' && window.SUPABASE_ANON_KEY ? window.SUPABASE_ANON_KEY : 'YOUR_SUPABASE_ANON_KEY';
+
     // Initialize the Supabase client using the CDN `supabase` global.
     supa = supabase.createClient(url, key);
 }
