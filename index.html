@@ -21,8 +21,8 @@
     <div class="collapse navbar-collapse" id="navbarNav">
       <ul class="navbar-nav ms-auto">
         <li class="nav-item"><a class="nav-link active" href="#" data-page="dashboard">Dashboard</a></li>
-        <li class="nav-item"><a class="nav-link" href="#" data-page="entry">Expense Entry</a></li>
-        <li class="nav-item"><a class="nav-link" href="#" data-page="list">Expense List</a></li>
+        <!-- Combine entry and list into a single Expenses page -->
+        <li class="nav-item"><a class="nav-link" href="#" data-page="expenses">Expenses</a></li>
         <li class="nav-item"><a class="nav-link" href="#" data-page="history">History</a></li>
         <li class="nav-item"><a class="nav-link" href="#" data-page="handover">Handover</a></li>
       </ul>
@@ -36,6 +36,8 @@
         <div class="row">
             <div class="col-md-6 mb-4">
                 <h3>Summary</h3>
+                <!-- Display date range and total spent for the current period -->
+                <div id="dashboard-info" class="mb-2 text-muted"></div>
                 <table class="table table-bordered" id="summary-table">
                     <thead class="table-light">
                         <tr>
@@ -58,8 +60,8 @@
             </div>
         </div>
     </div>
-    <!-- Expense Entry Section -->
-    <div id="entry" class="page-section d-none">
+    <!-- Expenses Section: entry and list combined -->
+    <div id="expenses" class="page-section d-none">
         <h3>Add Expense</h3>
         <form id="expense-form">
             <div class="row mb-3">
@@ -92,9 +94,10 @@
             </div>
             <div class="row mb-3">
                 <div class="col-md-6 mb-2">
-                    <label for="responsible" class="form-label">Responsible</label>
-                    <select class="form-select" id="responsible" multiple required></select>
-                    <small class="form-text text-muted">Hold Ctrl (or ⌘ on Mac) to select multiple names. Select "All" to split among all members.</small>
+                    <label class="form-label">Responsible</label>
+                    <!-- Checkbox container for responsible selection.  "All" will be selected by default. -->
+                    <div id="responsible-options" class="d-flex flex-wrap gap-2"></div>
+                    <small class="form-text text-muted">Select one or more responsible names. "All" is selected by default. Selecting any individual unchecks "All".</small>
                 </div>
                 <div class="col-md-6 mb-2">
                     <label for="description" class="form-label">Description</label>
@@ -103,9 +106,7 @@
             </div>
             <button type="submit" class="btn btn-primary">Add Expense</button>
         </form>
-    </div>
-    <!-- Expense List Section -->
-    <div id="list" class="page-section d-none">
+        <hr class="my-4">
         <h3>Expense List</h3>
         <div class="row mb-3">
             <div class="col-md-3 mb-2">
@@ -145,6 +146,7 @@
                     <th>Payer</th>
                     <th>Responsible</th>
                     <th>Payment Method</th>
+                    <th>Actions</th>
                 </tr>
             </thead>
             <tbody id="expenses-body">
@@ -170,6 +172,28 @@
         <div id="history-content" class="accordion" role="tablist">
             <!-- dynamically generated handover cards -->
         </div>
+        <hr class="my-4">
+        <div id="history-report" class="d-none">
+            <h4>Custom Report</h4>
+            <div class="row">
+                <div class="col-md-6 mb-4">
+                    <div id="history-report-info" class="mb-2 text-muted"></div>
+                    <table class="table table-bordered">
+                        <thead class="table-light">
+                            <tr><th>Member</th><th>Paid</th><th>Share</th><th>Net</th></tr>
+                        </thead>
+                        <tbody id="history-report-body"></tbody>
+                    </table>
+                </div>
+                <div class="col-md-6 mb-4">
+                    <div class="mb-2">
+                        <label for="history-chart-person" class="form-label">Select person:</label>
+                        <select id="history-chart-person" class="form-select"></select>
+                    </div>
+                    <canvas id="historyCategoryChart"></canvas>
+                </div>
+            </div>
+        </div>
     </div>
     <!-- Handover Section -->
     <div id="handover" class="page-section d-none">
@@ -186,5 +210,63 @@
 </div>
 
 <script src="script.js"></script>
+<!-- Edit Expense Modal -->
+<div class="modal fade" id="edit-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Edit Expense</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <form id="edit-form">
+          <div class="row mb-3">
+            <div class="col-md-4 mb-2">
+              <label for="edit-date" class="form-label">Date</label>
+              <input type="date" class="form-control" id="edit-date" required>
+            </div>
+            <div class="col-md-4 mb-2">
+              <label for="edit-title" class="form-label">Title</label>
+              <input type="text" class="form-control" id="edit-title" required>
+            </div>
+            <div class="col-md-4 mb-2">
+              <label for="edit-category" class="form-label">Category</label>
+              <select class="form-select" id="edit-category" required></select>
+            </div>
+          </div>
+          <div class="row mb-3">
+            <div class="col-md-4 mb-2">
+              <label for="edit-amount" class="form-label">Amount</label>
+              <input type="number" class="form-control" id="edit-amount" min="0" step="0.01" required>
+            </div>
+            <div class="col-md-4 mb-2">
+              <label for="edit-payment" class="form-label">Payment Method</label>
+              <select class="form-select" id="edit-payment" required></select>
+            </div>
+            <div class="col-md-4 mb-2">
+              <label for="edit-payer" class="form-label">Payer</label>
+              <select class="form-select" id="edit-payer" required></select>
+            </div>
+          </div>
+          <div class="row mb-3">
+            <div class="col-md-6 mb-2">
+              <label class="form-label">Responsible</label>
+              <div id="edit-responsible" class="d-flex flex-wrap gap-2"></div>
+              <small class="form-text text-muted">Select one or more responsible names. Selecting any individual unchecks "All".</small>
+            </div>
+            <div class="col-md-6 mb-2">
+              <label for="edit-description" class="form-label">Description</label>
+              <textarea class="form-control" id="edit-description" rows="2"></textarea>
+            </div>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="edit-save">Save changes</button>
+      </div>
+    </div>
+  </div>
+</div>
 </body>
 </html>
