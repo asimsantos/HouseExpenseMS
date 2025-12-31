@@ -8,20 +8,116 @@ const members = ['Asim', 'Appy', 'Chire', 'Priyash', 'Pratikshya', 'Ashmi'];
 const categories = ['Groceries', 'Bills/Utilities', 'Entertainment', 'Dining Out', 'Transport', 'Miscellaneous'];
 const paymentMethods = ['Cash', 'Card'];
 
-// Load persisted data from localStorage.  We store current period expenses in
-// `expenses` and past handovers in `handovers`. Each handover is an object
-// { start: 'YYYY-MM-DD', end: 'YYYY-MM-DD', expenses: [ ... ], summary: {...} }.
-let expenses = JSON.parse(localStorage.getItem('expenses') || '[]');
-let handovers = JSON.parse(localStorage.getItem('handovers') || '[]');
+// Configure Supabase connection. Instead of hard‑coding your credentials here,
+// we defer initialization until runtime. In production (e.g. on Vercel), the
+// environment variables SUPABASE_URL and SUPABASE_ANON_KEY are stored
+// securely and exposed via a serverless API route (`/api/env`). The
+// `initSupabase()` function below fetches those values and initializes the
+// Supabase client. For local development you can set `window.SUPABASE_URL`
+// and `window.SUPABASE_ANON_KEY` in a separate script to override the
+// default placeholders.
 
-// Persist changes to localStorage.
-function saveExpenses() {
-    localStorage.setItem('expenses', JSON.stringify(expenses));
+let supa = null;
+
+// Fetch environment variables from the `/api/env` endpoint (Vercel serverless
+// function) and initialize the Supabase client. If the fetch fails or
+// environment variables are not available, fall back to globals on `window`.
+async function initSupabase() {
+    // If supa has already been initialized, do nothing
+    if (supa) return;
+    let url = null;
+    let key = null;
+    try {
+        // Attempt to fetch from the serverless endpoint. This endpoint should
+        // return JSON with `supabaseUrl` and `supabaseAnonKey` fields. When
+        // deployed on Vercel, environment variables configured in the project
+        // settings will be injected into this function. See api/env.js.
+        const resp = await fetch('/api/env');
+        if (resp.ok) {
+            const json = await resp.json();
+            url = json.supabaseUrl || null;
+            key = json.supabaseAnonKey || null;
+        }
+    } catch (err) {
+        console.warn('Could not fetch Supabase credentials from /api/env:', err);
+    }
+    // Fall back to global variables if fetch failed or returned nothing
+    if (!url) url = typeof window !== 'undefined' && window.SUPABASE_URL ? window.SUPABASE_URL : 'YOUR_SUPABASE_URL';
+    if (!key) key = typeof window !== 'undefined' && window.SUPABASE_ANON_KEY ? window.SUPABASE_ANON_KEY : 'YOUR_SUPABASE_ANON_KEY';
+    // Initialize the Supabase client using the CDN `supabase` global.
+    supa = supabase.createClient(url, key);
 }
 
-function saveHandovers() {
-    localStorage.setItem('handovers', JSON.stringify(handovers));
+// In‑memory arrays for current expenses and past handovers. These will be
+// populated from Supabase on page load.
+let expenses = [];
+let handovers = [];
+
+// Archived expenses grouped by handover_id.  Each key is a handover UUID and
+// the value is an array of expenses belonging to that handover.  This is
+// populated in loadData() from Supabase.
+let archivedExpensesByHandover = {};
+
+// Load expenses and handovers from the remote database. This function
+// populates the `expenses` and `handovers` arrays and should be called
+// once on application start.
+async function loadData() {
+    // Ensure Supabase client is initialized before making queries.
+    await initSupabase();
+    // Fetch active expenses
+    const { data: expData, error: expErr } = await supa
+        .from('expenses')
+        // Load only active expenses (where handover_id IS NULL)
+        .select('*')
+        .is('handover_id', null)
+        .order('date', { ascending: true });
+    if (expErr) {
+        console.error('Error loading expenses:', expErr);
+        expenses = [];
+    } else {
+        expenses = expData || [];
+    }
+    // Fetch handovers
+    const { data: hoData, error: hoErr } = await supa
+        .from('handovers')
+        .select('*')
+        .order('start_date', { ascending: true });
+    if (hoErr) {
+        console.error('Error loading handovers:', hoErr);
+        handovers = [];
+    } else {
+        // Normalize handover objects so the code can refer to `.start` and `.end` properties.
+        // When loading from Supabase, the columns are named `start_date` and `end_date`.
+        handovers = (hoData || []).map(ho => {
+            return {
+                ...ho,
+                start: ho.start || ho.start_date,
+                end: ho.end || ho.end_date
+            };
+        });
+    }
+
+    // Fetch archived expenses (those belonging to past handovers) and group them
+    const { data: archivedData, error: archErr } = await supa
+        .from('expenses')
+        .select('*')
+        .not('handover_id', 'is', null)
+        .order('date', { ascending: true });
+    if (archErr) {
+        console.error('Error loading archived expenses:', archErr);
+        archivedExpensesByHandover = {};
+    } else {
+        archivedExpensesByHandover = {};
+        (archivedData || []).forEach(exp => {
+            const hid = exp.handover_id;
+            if (!archivedExpensesByHandover[hid]) archivedExpensesByHandover[hid] = [];
+            archivedExpensesByHandover[hid].push(exp);
+        });
+    }
 }
+
+// NOTE: The previous localStorage persistence functions (saveExpenses, saveHandovers)
+// are no longer used because data is stored remotely.
 
 // Populate select elements with options.  If includeAll is true, add an "All"
 // option that represents splitting among all members.  This is used for the
@@ -235,10 +331,15 @@ function renderHistoryReport() {
     const tbody = document.getElementById('history-report-body');
     const chartSelect = document.getElementById('history-chart-person');
     if (!reportDiv || !infoDiv || !tbody || !chartSelect) return;
-    // Collect expenses from handovers within the specified date range
+    // Collect expenses from handovers within the specified date range.  We
+    // retrieve archived expenses from the `archivedExpensesByHandover`
+    // structure instead of relying on a nonexistent `handover.expenses`
+    // property. Each archived expense has a `handover_id` linking it to its
+    // handover record.
     let selectedExpenses = [];
     handovers.forEach(handover => {
-        handover.expenses.forEach(exp => {
+        const hoExps = archivedExpensesByHandover[handover.id] || [];
+        hoExps.forEach(exp => {
             if (startDate && exp.date < startDate) return;
             if (endDate && exp.date > endDate) return;
             selectedExpenses.push(exp);
@@ -381,10 +482,10 @@ function openEditModal(index) {
 }
 
 // Save changes made in the edit modal back to the expenses list
-function saveEdit() {
+async function saveEdit() {
     if (currentEditIndex === null) return;
     const idx = currentEditIndex;
-    // Retrieve values
+    // Retrieve values from the modal
     const date = document.getElementById('edit-date').value;
     const title = document.getElementById('edit-title').value;
     const description = document.getElementById('edit-description').value;
@@ -397,7 +498,9 @@ function saveEdit() {
         alert('Please select at least one responsible person');
         return;
     }
-    expenses[idx] = {
+    // Grab the existing expense record to get its ID
+    const existing = expenses[idx];
+    const updated = {
         date,
         title,
         description,
@@ -407,28 +510,52 @@ function saveEdit() {
         payer,
         responsible: selected
     };
-    saveExpenses();
-    // Refresh views
-    renderSummary();
-    renderExpensesList();
-    const person = document.getElementById('chart-person-select').value || 'All';
-    renderCategoryChart(person);
-    // Hide modal
-    const modalEl = document.getElementById('edit-modal');
-    const modal = bootstrap.Modal.getInstance(modalEl);
-    modal.hide();
-    currentEditIndex = null;
+    try {
+        // Perform update in Supabase using the record's ID
+        const { error } = await supa.from('expenses').update(updated).eq('id', existing.id);
+        if (error) {
+            console.error('Error updating expense:', error);
+            alert('Failed to update expense');
+            return;
+        }
+        // Replace the record in the local array
+        expenses[idx] = { ...existing, ...updated };
+        // Refresh views
+        renderSummary();
+        renderExpensesList();
+        const person = document.getElementById('chart-person-select').value || 'All';
+        renderCategoryChart(person);
+        // Hide modal
+        const modalEl = document.getElementById('edit-modal');
+        const modal = bootstrap.Modal.getInstance(modalEl);
+        modal.hide();
+        currentEditIndex = null;
+    } catch (err) {
+        console.error('Unexpected error updating expense:', err);
+        alert('An unexpected error occurred while updating expense');
+    }
 }
 
 // Delete an expense by index after confirmation
-function deleteExpense(index) {
+async function deleteExpense(index) {
     if (!confirm('Are you sure you want to delete this expense?')) return;
-    expenses.splice(index, 1);
-    saveExpenses();
-    renderSummary();
-    renderExpensesList();
-    const person = document.getElementById('chart-person-select').value || 'All';
-    renderCategoryChart(person);
+    const exp = expenses[index];
+    try {
+        const { error } = await supa.from('expenses').delete().eq('id', exp.id);
+        if (error) {
+            console.error('Error deleting expense:', error);
+            alert('Failed to delete expense');
+            return;
+        }
+        expenses.splice(index, 1);
+        renderSummary();
+        renderExpensesList();
+        const person = document.getElementById('chart-person-select').value || 'All';
+        renderCategoryChart(person);
+    } catch (err) {
+        console.error('Unexpected error deleting expense:', err);
+        alert('An unexpected error occurred while deleting expense');
+    }
 }
 
 // Render summary table for the dashboard using current expenses.
@@ -586,6 +713,12 @@ function renderHistory() {
         if (handover.transactions && handover.transactions.length > 0) {
             settlementHTML = `<h6>Settlement</h6><ul>` + handover.transactions.map(t => `<li>${t}</li>`).join('') + `</ul><hr>`;
         }
+        // Retrieve archived expenses for this handover from the grouped object
+        const hoExps = archivedExpensesByHandover[handover.id] || [];
+        const expensesRows = hoExps.map(exp => {
+            const respList = (exp.responsible || exp.beneficiaries || []).join(', ');
+            return `<tr><td>${exp.date}</td><td>${exp.title}</td><td>$${parseFloat(exp.amount).toFixed(2)}</td><td>${exp.category}</td><td>${exp.payer}</td><td>${respList}</td><td>${exp.payment}</td></tr>`;
+        }).join('');
         card.innerHTML = `
             <h2 class="accordion-header" id="${headerId}">
                 <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#${collapseId}" aria-expanded="false" aria-controls="${collapseId}">
@@ -605,10 +738,7 @@ function renderHistory() {
                             </tr>
                         </thead>
                         <tbody>
-                            ${handover.expenses.map(exp => {
-                                const respList = (exp.responsible || exp.beneficiaries || []).join(', ');
-                                return `<tr><td>${exp.date}</td><td>${exp.title}</td><td>$${parseFloat(exp.amount).toFixed(2)}</td><td>${exp.category}</td><td>${exp.payer}</td><td>${respList}</td><td>${exp.payment}</td></tr>`;
-                            }).join('')}
+                            ${expensesRows}
                         </tbody>
                     </table>
                 </div>
@@ -680,7 +810,7 @@ function showPage(page) {
 }
 
 // Add expense handler.  Validates responsible selection and pushes new entry.
-function addExpense(event) {
+async function addExpense(event) {
     event.preventDefault();
     const date = document.getElementById('date').value;
     const title = document.getElementById('title').value;
@@ -695,18 +825,33 @@ function addExpense(event) {
         alert('Please select at least one responsible person');
         return;
     }
-    const exp = { date, title, description, amount, category, payment, payer, responsible: selected };
-    expenses.push(exp);
-    saveExpenses();
-    // Reset form fields and reset responsible checkboxes to default (All)
-    document.getElementById('expense-form').reset();
-    populateResponsibleCheckboxes('responsible-options', ['All']);
-    // Refresh summary, list and chart
-    renderSummary();
-    renderExpensesList();
-    const person = document.getElementById('chart-person-select').value || 'All';
-    renderCategoryChart(person);
-    alert('Expense added successfully!');
+    // Include handover_id as null to mark this expense as active (not yet handed over).
+    const exp = { date, title, description, amount, category, payment, payer, responsible: selected, handover_id: null };
+    try {
+        // Insert into Supabase and get the created record back
+        const { data, error } = await supa.from('expenses').insert([exp]).select();
+        if (error) {
+            console.error('Error adding expense:', error);
+            alert('Failed to add expense');
+            return;
+        }
+        // Append the returned record to the local array
+        if (data && data.length > 0) {
+            expenses.push(data[0]);
+        }
+        // Reset form fields and reset responsible checkboxes to default (All)
+        document.getElementById('expense-form').reset();
+        populateResponsibleCheckboxes('responsible-options', ['All']);
+        // Refresh summary, list and chart
+        renderSummary();
+        renderExpensesList();
+        const person = document.getElementById('chart-person-select').value || 'All';
+        renderCategoryChart(person);
+        alert('Expense added successfully!');
+    } catch (err) {
+        console.error('Unexpected error adding expense:', err);
+        alert('An unexpected error occurred while adding expense');
+    }
 }
 
 // Handle handover generation: compute summary for current expenses and show confirmation.
@@ -756,33 +901,66 @@ function generateHandover() {
 }
 
 // Confirm handover: move expenses to history, clear current, and save.
-function confirmHandover() {
+async function confirmHandover() {
     const start = this.dataset.start;
     const end = this.dataset.end;
     const summary = JSON.parse(this.dataset.summary);
     const transactions = JSON.parse(this.dataset.transactions || '[]');
-    // Clone current expenses into handover record
-    const recordExpenses = expenses.map(exp => ({ ...exp }));
-    handovers.push({ start, end, expenses: recordExpenses, summary, transactions });
-    saveHandovers();
-    // Clear current expenses
-    expenses = [];
-    saveExpenses();
-    // Hide confirm button
-    document.getElementById('confirm-handover').classList.add('d-none');
-    // Refresh views
-    renderSummary();
-    renderExpensesList();
-    renderHistory();
-    // Reset dashboard period and total
-    renderDashboardInfo();
-    // Clear summary display
-    document.getElementById('handover-summary').innerHTML = '';
-    alert('Handover completed. The period has been moved to history.');
+    try {
+        // Insert the handover summary into Supabase and retrieve the inserted row
+        // (requires .select()).  The columns must be named `start_date`,
+        // `end_date`, `summary`, and `transactions`.
+        const insertObj = {
+            start_date: start,
+            end_date: end,
+            summary: summary,
+            transactions: transactions
+        };
+        const { data: hoInsertData, error: hoErr } = await supa.from('handovers').insert([insertObj]).select();
+        if (hoErr) {
+            console.error('Error inserting handover:', hoErr);
+            alert('Failed to record handover');
+            return;
+        }
+        const newHandover = hoInsertData && hoInsertData.length > 0 ? hoInsertData[0] : null;
+        if (!newHandover) {
+            alert('Failed to retrieve new handover');
+            return;
+        }
+        // Update all current expenses to mark them as belonging to this handover
+        // (set handover_id).  We iterate each expense and update individually.
+        for (const exp of expenses) {
+            const { error: updErr } = await supa.from('expenses').update({ handover_id: newHandover.id }).eq('id', exp.id);
+            if (updErr) {
+                console.error('Error updating expense during handover:', updErr);
+            }
+        }
+        // After remote operations, clear local active expenses and reload from DB
+        expenses = [];
+        await loadData();
+        // Hide confirm button
+        document.getElementById('confirm-handover').classList.add('d-none');
+        // Refresh views
+        renderSummary();
+        renderExpensesList();
+        renderHistory();
+        // Reset dashboard period and total
+        renderDashboardInfo();
+        // Clear summary display
+        document.getElementById('handover-summary').innerHTML = '';
+        alert('Handover completed. The period has been moved to history.');
+    } catch (err) {
+        console.error('Unexpected error during handover:', err);
+        alert('An unexpected error occurred while completing the handover');
+    }
 }
 
 // Initialize page
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+    // Initialize Supabase (fetch env variables) and load remote data
+    await initSupabase();
+    await loadData();
+
     // Populate selects for forms and filters
     populateSelect('category', categories);
     populateSelect('payment', paymentMethods);
@@ -813,10 +991,10 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     // Populate chart person select (for dashboard)
     const chartSelect = document.getElementById('chart-person-select');
-    const allOpt = document.createElement('option');
-    allOpt.value = 'All';
-    allOpt.textContent = 'All';
-    chartSelect.appendChild(allOpt);
+    const allOptSel = document.createElement('option');
+    allOptSel.value = 'All';
+    allOptSel.textContent = 'All';
+    chartSelect.appendChild(allOptSel);
     members.forEach(name => {
         const opt = document.createElement('option');
         opt.value = name;
@@ -853,7 +1031,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Edit modal save button
     document.getElementById('edit-save').addEventListener('click', saveEdit);
-    // Initial render
+    // Initial render after data load
     renderSummary();
     renderDashboardInfo();
     // Set default chart to overall
