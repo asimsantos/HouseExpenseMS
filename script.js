@@ -2,7 +2,8 @@
 // This script powers the multi‑page household expense tracker. It manages state,
 // renders views, handles filters and sorting, and coordinates handovers and history.
 
-// Define members, categories and payment methods. 
+// Define members, categories and payment methods.  Updated to include Ashmi
+// instead of Asmi and to use a new label "Responsible" for splitting expenses.
 const members = ['Asim', 'Appy', 'Chire', 'Priyash', 'Pratikshya', 'Ashmi'];
 const categories = ['Groceries', 'Bills/Utilities', 'Entertainment', 'Dining Out', 'Transport', 'Miscellaneous'];
 const paymentMethods = ['Cash', 'Card'];
@@ -40,7 +41,9 @@ async function initSupabase() {
     } catch (err) {
         console.warn('Could not fetch Supabase credentials from /api/env:', err);
     }
-
+    // Fall back to global variables if fetch failed or returned nothing
+    if (!url) url = typeof window !== 'undefined' && window.SUPABASE_URL ? window.SUPABASE_URL : 'YOUR_SUPABASE_URL';
+    if (!key) key = typeof window !== 'undefined' && window.SUPABASE_ANON_KEY ? window.SUPABASE_ANON_KEY : 'YOUR_SUPABASE_ANON_KEY';
     // Initialize the Supabase client using the CDN `supabase` global.
     supa = supabase.createClient(url, key);
 }
@@ -862,21 +865,29 @@ function generateHandover() {
         alert('No expenses to handover');
         return;
     }
-    // Determine start date as earliest expense date or last handover end
+    // Determine start date: if there are previous handovers, use the last handover's end; otherwise use the earliest expense date.
     let startDate;
     if (handovers.length === 0) {
         startDate = expenses.reduce((min, exp) => (exp.date < min ? exp.date : min), expenses[0].date);
     } else {
-        // Last handover end is the start for new period
         startDate = handovers[handovers.length - 1].end;
     }
-    // Compute summary for current expenses list
-    const summary = computeSummaryFromList(expenses);
+    // Filter expenses within the new handover period. Only include expenses with
+    // dates strictly greater than startDate and less than or equal to the selected handover date.
+    const selectedExpenses = expenses.filter(exp => {
+        // Compare ISO date strings directly; they are lexicographically comparable.
+        return exp.date > startDate && exp.date <= date;
+    });
+    if (selectedExpenses.length === 0) {
+        alert('No expenses to handover for the selected date range.');
+        return;
+    }
+    // Compute summary, transactions and total using only the selected expenses.
+    const summary = computeSummaryFromList(selectedExpenses);
     const summaryHTML = generateSummaryTableHTML(summary);
-    // Compute settlement transactions and total
     const transactions = computeSettlement(summary);
-    const total = expenses.reduce((sum, exp) => sum + parseFloat(exp.amount), 0);
-    // Display summary, total and settlement transactions
+    const total = selectedExpenses.reduce((sum, exp) => sum + parseFloat(exp.amount), 0);
+    // Display summary, total and settlement details
     const summaryDiv = document.getElementById('handover-summary');
     const startDisp = formatDateDisplay(startDate);
     const endDisp = formatDateDisplay(date);
@@ -887,14 +898,14 @@ function generateHandover() {
         html += '<h6 class="mt-3">Settlement</h6><ul>' + transactions.map(t => `<li>${t}</li>`).join('') + '</ul>';
     }
     summaryDiv.innerHTML = html;
-    // Show confirm button
+    // Show confirm button and store the selected expenses' IDs so we can update them later
     const confirmBtn = document.getElementById('confirm-handover');
     confirmBtn.classList.remove('d-none');
-    // Store data for confirm
     confirmBtn.dataset.start = startDate;
     confirmBtn.dataset.end = date;
     confirmBtn.dataset.summary = JSON.stringify(summary);
     confirmBtn.dataset.transactions = JSON.stringify(transactions);
+    confirmBtn.dataset.expenseIds = JSON.stringify(selectedExpenses.map(e => e.id));
 }
 
 // Confirm handover: move expenses to history, clear current, and save.
@@ -903,10 +914,9 @@ async function confirmHandover() {
     const end = this.dataset.end;
     const summary = JSON.parse(this.dataset.summary);
     const transactions = JSON.parse(this.dataset.transactions || '[]');
+    const expenseIds = JSON.parse(this.dataset.expenseIds || '[]');
     try {
         // Insert the handover summary into Supabase and retrieve the inserted row
-        // (requires .select()).  The columns must be named `start_date`,
-        // `end_date`, `summary`, and `transactions`.
         const insertObj = {
             start_date: start,
             end_date: end,
@@ -924,16 +934,16 @@ async function confirmHandover() {
             alert('Failed to retrieve new handover');
             return;
         }
-        // Update all current expenses to mark them as belonging to this handover
-        // (set handover_id).  We iterate each expense and update individually.
-        for (const exp of expenses) {
-            const { error: updErr } = await supa.from('expenses').update({ handover_id: newHandover.id }).eq('id', exp.id);
+        // Update only the selected expenses to mark them as belonging to this handover
+        for (const id of expenseIds) {
+            const { error: updErr } = await supa.from('expenses').update({ handover_id: newHandover.id }).eq('id', id);
             if (updErr) {
                 console.error('Error updating expense during handover:', updErr);
             }
         }
-        // After remote operations, clear local active expenses and reload from DB
-        expenses = [];
+        // Remove the handed over expenses from the local active list
+        expenses = expenses.filter(exp => !expenseIds.includes(exp.id));
+        // Reload archived data from DB to update history and local arrays
         await loadData();
         // Hide confirm button
         document.getElementById('confirm-handover').classList.add('d-none');
@@ -941,7 +951,7 @@ async function confirmHandover() {
         renderSummary();
         renderExpensesList();
         renderHistory();
-        // Reset dashboard period and total
+        // Update dashboard period and total
         renderDashboardInfo();
         // Clear summary display
         document.getElementById('handover-summary').innerHTML = '';
