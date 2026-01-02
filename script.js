@@ -872,11 +872,20 @@ function generateHandover() {
     } else {
         startDate = handovers[handovers.length - 1].end;
     }
-    // Filter expenses within the new handover period. Only include expenses with
-    // dates strictly greater than startDate and less than or equal to the selected handover date.
+    // Filter expenses within the new handover period.  If there is a previous
+    // handover, we exclude any expense with a date equal to startDate (since
+    // that date was covered by the previous period).  For the very first
+    // handover (no prior handovers), we include the earliest expense date as
+    // part of the period.  We also only include expenses up to (and
+    // including) the chosen handover date.
+    const includeStart = (handovers.length === 0);
     const selectedExpenses = expenses.filter(exp => {
         // Compare ISO date strings directly; they are lexicographically comparable.
-        return exp.date > startDate && exp.date <= date;
+        if (includeStart) {
+            return exp.date >= startDate && exp.date <= date;
+        } else {
+            return exp.date > startDate && exp.date <= date;
+        }
     });
     if (selectedExpenses.length === 0) {
         alert('No expenses to handover for the selected date range.');
