@@ -27,6 +27,8 @@
         <li class="nav-item"><a class="nav-link" href="#" data-page="expenses">Expenses</a></li>
         <li class="nav-item"><a class="nav-link" href="#" data-page="history">History</a></li>
         <li class="nav-item"><a class="nav-link" href="#" data-page="handover">Handover</a></li>
+        <!-- Settings page to manage members and categories -->
+        <li class="nav-item"><a class="nav-link" href="#" data-page="settings">Settings</a></li>
       </ul>
     </div>
   </div>
@@ -208,6 +210,35 @@
         <div id="handover-summary" class="mb-3"></div>
         <button id="generate-handover" class="btn btn-warning">Generate Summary</button>
         <button id="confirm-handover" class="btn btn-danger d-none">Confirm Handover</button>
+    </div>
+
+    <!-- Settings Section -->
+    <div id="settings" class="page-section d-none">
+        <h3>Settings</h3>
+        <div class="row">
+            <!-- Members management -->
+            <div class="col-md-6 mb-4">
+                <h5>Members</h5>
+                <!-- Form to add a new member -->
+                <form id="add-member-form" class="d-flex mb-3">
+                    <input type="text" id="new-member-name" class="form-control me-2" placeholder="New member name" required>
+                    <button type="submit" class="btn btn-primary">Add Member</button>
+                </form>
+                <!-- List of members -->
+                <ul id="members-list" class="list-group"></ul>
+            </div>
+            <!-- Categories management -->
+            <div class="col-md-6 mb-4">
+                <h5>Categories</h5>
+                <!-- Form to add a new category -->
+                <form id="add-category-form" class="d-flex mb-3">
+                    <input type="text" id="new-category-name" class="form-control me-2" placeholder="New category name" required>
+                    <button type="submit" class="btn btn-primary">Add Category</button>
+                </form>
+                <!-- List of categories -->
+                <ul id="categories-list" class="list-group"></ul>
+            </div>
+        </div>
     </div>
 </div>
 
