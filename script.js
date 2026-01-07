@@ -2,10 +2,14 @@
 // This script powers the multi‑page household expense tracker. It manages state,
 // renders views, handles filters and sorting, and coordinates handovers and history.
 
-// Define members, categories and payment methods.  Updated to include Ashmi
-// instead of Asmi and to use a new label "Responsible" for splitting expenses.
-const members = ['Asim', 'Appy', 'Chire', 'Priyash', 'Pratikshya', 'Ashmi'];
-const categories = ['Groceries', 'Bills/Utilities', 'Entertainment', 'Dining Out', 'Transport', 'Miscellaneous'];
+// Define payment methods.  Members and categories are now fetched dynamically
+// from the database instead of being hard‑coded.  The arrays below will be
+// populated by loadMembersAndCategories().  We also keep the full
+// Supabase records to allow updates/deletions by ID.
+let members = [];
+let memberRecords = [];
+let categories = [];
+let categoryRecords = [];
 const paymentMethods = ['Cash', 'Card'];
 
 // Configure Supabase connection. Instead of hard‑coding your credentials here,
@@ -114,6 +118,452 @@ async function loadData() {
             archivedExpensesByHandover[hid].push(exp);
         });
     }
+}
+
+// Load members and categories from Supabase.  This function should be called
+// once on application startup and whenever the lists need to be refreshed.
+// It populates both the arrays of names and their corresponding record
+// objects.  Members and categories are ordered alphabetically by name.
+async function loadMembersAndCategories() {
+    await initSupabase();
+    // Load members
+    try {
+        const { data: memData, error: memErr } = await supa
+            .from('members')
+            .select('*')
+            .order('name', { ascending: true });
+        if (memErr) {
+            console.error('Error loading members:', memErr);
+            members = [];
+            memberRecords = [];
+        } else {
+            memberRecords = memData || [];
+            members = memberRecords.map(m => m.name);
+        }
+    } catch (err) {
+        console.error('Unexpected error loading members:', err);
+        members = [];
+        memberRecords = [];
+    }
+    // Load categories
+    try {
+        const { data: catData, error: catErr } = await supa
+            .from('categories')
+            .select('*')
+            .order('name', { ascending: true });
+        if (catErr) {
+            console.error('Error loading categories:', catErr);
+            categories = [];
+            categoryRecords = [];
+        } else {
+            categoryRecords = catData || [];
+            categories = categoryRecords.map(c => c.name);
+        }
+    } catch (err) {
+        console.error('Unexpected error loading categories:', err);
+        categories = [];
+        categoryRecords = [];
+    }
+}
+
+// Render the settings page lists of members and categories.  It clears
+// existing list items and recreates them with edit and delete buttons.
+function renderSettings() {
+    const membersList = document.getElementById('members-list');
+    const categoriesList = document.getElementById('categories-list');
+    if (!membersList || !categoriesList) return;
+    // Clear existing entries
+    membersList.innerHTML = '';
+    categoriesList.innerHTML = '';
+    // Helper to create list items with edit/delete actions
+    function createListItem(name, onEdit, onDelete) {
+        const li = document.createElement('li');
+        li.className = 'list-group-item d-flex justify-content-between align-items-center';
+        const span = document.createElement('span');
+        span.textContent = name;
+        const actions = document.createElement('div');
+        actions.className = 'btn-group btn-group-sm';
+        const editBtn = document.createElement('button');
+        editBtn.className = 'btn btn-outline-secondary';
+        editBtn.textContent = 'Edit';
+        editBtn.addEventListener('click', () => onEdit(name));
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'btn btn-outline-danger';
+        deleteBtn.textContent = 'Delete';
+        deleteBtn.addEventListener('click', () => onDelete(name));
+        actions.appendChild(editBtn);
+        actions.appendChild(deleteBtn);
+        li.appendChild(span);
+        li.appendChild(actions);
+        return li;
+    }
+    // Populate members list
+    members.forEach(name => {
+        const li = createListItem(name, editMember, deleteMember);
+        membersList.appendChild(li);
+    });
+    // Populate categories list
+    categories.forEach(name => {
+        const li = createListItem(name, editCategory, deleteCategory);
+        categoriesList.appendChild(li);
+    });
+}
+
+// Add a new member.  Inserts into Supabase and refreshes the lists.
+async function addMember(event) {
+    event.preventDefault();
+    const input = document.getElementById('new-member-name');
+    if (!input) return;
+    const name = input.value.trim();
+    if (!name) return;
+    // Prevent duplicates
+    if (members.includes(name)) {
+        alert('Member already exists');
+        return;
+    }
+    try {
+        const { data, error } = await supa.from('members').insert([{ name }]).select();
+        if (error) {
+            console.error('Error adding member:', error);
+            alert('Failed to add member');
+            return;
+        }
+        // Update local arrays
+        if (data && data.length > 0) {
+            memberRecords.push(data[0]);
+            members.push(name);
+        }
+        // Reset input
+        input.value = '';
+        // Refresh settings and forms
+        await refreshAfterListChange();
+    } catch (err) {
+        console.error('Unexpected error adding member:', err);
+        alert('An unexpected error occurred while adding member');
+    }
+}
+
+// Add a new category.  Inserts into Supabase and refreshes the lists.
+async function addCategory(event) {
+    event.preventDefault();
+    const input = document.getElementById('new-category-name');
+    if (!input) return;
+    const name = input.value.trim();
+    if (!name) return;
+    if (categories.includes(name)) {
+        alert('Category already exists');
+        return;
+    }
+    try {
+        const { data, error } = await supa.from('categories').insert([{ name }]).select();
+        if (error) {
+            console.error('Error adding category:', error);
+            alert('Failed to add category');
+            return;
+        }
+        if (data && data.length > 0) {
+            categoryRecords.push(data[0]);
+            categories.push(name);
+        }
+        input.value = '';
+        await refreshAfterListChange();
+    } catch (err) {
+        console.error('Unexpected error adding category:', err);
+        alert('An unexpected error occurred while adding category');
+    }
+}
+
+// Edit an existing member.  Prompts the user for a new name and updates
+// both the members table and any expenses referencing the old name.  If the
+// new name already exists, it aborts.  After updating, it refreshes local
+// arrays and UI.  The parameter `oldName` is the current name to edit.
+async function editMember(oldName) {
+    const newName = prompt(`Enter new name for ${oldName}:`, oldName);
+    if (newName === null) return; // Cancelled
+    const trimmed = newName.trim();
+    if (!trimmed) return;
+    if (trimmed === oldName) return;
+    if (members.includes(trimmed)) {
+        alert('A member with that name already exists');
+        return;
+    }
+    // Find member record by name
+    const memRec = memberRecords.find(rec => rec.name === oldName);
+    if (!memRec) {
+        console.error('Member record not found for editing:', oldName);
+        return;
+    }
+    try {
+        // Update the member record
+        const { error: updErr } = await supa.from('members').update({ name: trimmed }).eq('id', memRec.id);
+        if (updErr) {
+            console.error('Error updating member name:', updErr);
+            alert('Failed to update member');
+            return;
+        }
+        // Update any expenses where this person is the payer
+        for (const exp of [...expenses]) {
+            let changed = false;
+            if (exp.payer === oldName) {
+                exp.payer = trimmed;
+                changed = true;
+            }
+            const resp = exp.responsible || exp.beneficiaries || [];
+            if (resp.includes(oldName)) {
+                const newResp = resp.map(name => name === oldName ? trimmed : name);
+                exp.responsible = newResp;
+                changed = true;
+            }
+            if (changed) {
+                // Persist update to Supabase
+                const updateObj = { payer: exp.payer, responsible: exp.responsible };
+                await supa.from('expenses').update(updateObj).eq('id', exp.id);
+            }
+        }
+        // Update archived expenses as well
+        for (const hid in archivedExpensesByHandover) {
+            const list = archivedExpensesByHandover[hid];
+            for (const exp of list) {
+                let changed = false;
+                if (exp.payer === oldName) {
+                    exp.payer = trimmed;
+                    changed = true;
+                }
+                const resp = exp.responsible || exp.beneficiaries || [];
+                if (resp.includes(oldName)) {
+                    const newResp = resp.map(name => name === oldName ? trimmed : name);
+                    exp.responsible = newResp;
+                    changed = true;
+                }
+                if (changed) {
+                    await supa.from('expenses').update({ payer: exp.payer, responsible: exp.responsible }).eq('id', exp.id);
+                }
+            }
+        }
+        // Refresh members list and local arrays
+        await loadMembersAndCategories();
+        // Re‑render UI
+        await refreshAfterListChange();
+        alert(`Member renamed from ${oldName} to ${trimmed}`);
+    } catch (err) {
+        console.error('Unexpected error editing member:', err);
+        alert('An unexpected error occurred while editing member');
+    }
+}
+
+// Delete a member.  Only allowed if the member is not referenced in any
+// expense (payer or responsible).  If referenced, a warning is shown and
+// deletion is aborted.
+async function deleteMember(name) {
+    // Check if any active or archived expense references this member
+    const usedInActive = expenses.some(exp => exp.payer === name || (exp.responsible || exp.beneficiaries || []).includes(name));
+    let usedInArchived = false;
+    if (!usedInActive) {
+        for (const hid in archivedExpensesByHandover) {
+            const list = archivedExpensesByHandover[hid];
+            if (list.some(exp => exp.payer === name || (exp.responsible || exp.beneficiaries || []).includes(name))) {
+                usedInArchived = true;
+                break;
+            }
+        }
+    }
+    if (usedInActive || usedInArchived) {
+        alert('Cannot delete member because they are referenced in existing expenses or history.');
+        return;
+    }
+    if (!confirm(`Delete member ${name}? This action cannot be undone.`)) return;
+    // Find the record
+    const memRec = memberRecords.find(rec => rec.name === name);
+    if (!memRec) return;
+    try {
+        const { error } = await supa.from('members').delete().eq('id', memRec.id);
+        if (error) {
+            console.error('Error deleting member:', error);
+            alert('Failed to delete member');
+            return;
+        }
+        // Remove from local arrays
+        members = members.filter(m => m !== name);
+        memberRecords = memberRecords.filter(rec => rec.id !== memRec.id);
+        // Refresh UI and forms
+        await refreshAfterListChange();
+    } catch (err) {
+        console.error('Unexpected error deleting member:', err);
+        alert('An unexpected error occurred while deleting member');
+    }
+}
+
+// Edit an existing category.  Prompts for a new name and updates the
+// categories table as well as any expenses referencing the old category.
+async function editCategory(oldName) {
+    const newName = prompt(`Enter new name for ${oldName}:`, oldName);
+    if (newName === null) return;
+    const trimmed = newName.trim();
+    if (!trimmed || trimmed === oldName) return;
+    if (categories.includes(trimmed)) {
+        alert('A category with that name already exists');
+        return;
+    }
+    const catRec = categoryRecords.find(rec => rec.name === oldName);
+    if (!catRec) {
+        console.error('Category record not found for editing:', oldName);
+        return;
+    }
+    try {
+        const { error: updErr } = await supa.from('categories').update({ name: trimmed }).eq('id', catRec.id);
+        if (updErr) {
+            console.error('Error updating category name:', updErr);
+            alert('Failed to update category');
+            return;
+        }
+        // Update expenses referencing this category (active)
+        for (const exp of [...expenses]) {
+            if (exp.category === oldName) {
+                exp.category = trimmed;
+                await supa.from('expenses').update({ category: trimmed }).eq('id', exp.id);
+            }
+        }
+        // Update archived expenses as well
+        for (const hid in archivedExpensesByHandover) {
+            const list = archivedExpensesByHandover[hid];
+            for (const exp of list) {
+                if (exp.category === oldName) {
+                    exp.category = trimmed;
+                    await supa.from('expenses').update({ category: trimmed }).eq('id', exp.id);
+                }
+            }
+        }
+        // Refresh categories list and local arrays
+        await loadMembersAndCategories();
+        await refreshAfterListChange();
+        alert(`Category renamed from ${oldName} to ${trimmed}`);
+    } catch (err) {
+        console.error('Unexpected error editing category:', err);
+        alert('An unexpected error occurred while editing category');
+    }
+}
+
+// Delete a category if unused.  Prevents deletion when it is referenced in
+// any expense (active or archived).  Otherwise removes it from the table and
+// refreshes the UI.
+async function deleteCategory(name) {
+    // Check if any expense references this category
+    const usedInActive = expenses.some(exp => exp.category === name);
+    let usedInArchived = false;
+    if (!usedInActive) {
+        for (const hid in archivedExpensesByHandover) {
+            const list = archivedExpensesByHandover[hid];
+            if (list.some(exp => exp.category === name)) {
+                usedInArchived = true;
+                break;
+            }
+        }
+    }
+    if (usedInActive || usedInArchived) {
+        alert('Cannot delete category because it is referenced in existing expenses or history.');
+        return;
+    }
+    if (!confirm(`Delete category ${name}? This action cannot be undone.`)) return;
+    const catRec = categoryRecords.find(rec => rec.name === name);
+    if (!catRec) return;
+    try {
+        const { error } = await supa.from('categories').delete().eq('id', catRec.id);
+        if (error) {
+            console.error('Error deleting category:', error);
+            alert('Failed to delete category');
+            return;
+        }
+        // Remove from local arrays
+        categories = categories.filter(c => c !== name);
+        categoryRecords = categoryRecords.filter(rec => rec.id !== catRec.id);
+        await refreshAfterListChange();
+    } catch (err) {
+        console.error('Unexpected error deleting category:', err);
+        alert('An unexpected error occurred while deleting category');
+    }
+}
+
+// Helper function to refresh the UI and forms after members or categories
+// change.  Re‑populates selects, filters, responsible checkboxes and
+// re‑renders all relevant views.
+async function refreshAfterListChange() {
+    // Repopulate selects for add/edit forms
+    populateSelect('category', categories);
+    populateSelect('payment', paymentMethods);
+    populateSelect('payer', members);
+    populateResponsibleCheckboxes('responsible-options', ['All']);
+    // Repopulate filters
+    const payerFilter = document.getElementById('filter-payer');
+    if (payerFilter) {
+        payerFilter.innerHTML = '<option value="">All</option>';
+        members.forEach(name => {
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name;
+            payerFilter.appendChild(opt);
+        });
+    }
+    const categoryFilter = document.getElementById('filter-category');
+    if (categoryFilter) {
+        categoryFilter.innerHTML = '<option value="">All</option>';
+        categories.forEach(cat => {
+            const opt = document.createElement('option');
+            opt.value = cat;
+            opt.textContent = cat;
+            categoryFilter.appendChild(opt);
+        });
+    }
+    const responsibleFilter = document.getElementById('filter-responsible');
+    if (responsibleFilter) {
+        responsibleFilter.innerHTML = '<option value="">All</option>';
+        members.forEach(name => {
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name;
+            responsibleFilter.appendChild(opt);
+        });
+    }
+    // Repopulate chart selects
+    const chartSelect = document.getElementById('chart-person-select');
+    if (chartSelect) {
+        chartSelect.innerHTML = '';
+        const allOpt = document.createElement('option');
+        allOpt.value = 'All';
+        allOpt.textContent = 'All';
+        chartSelect.appendChild(allOpt);
+        members.forEach(name => {
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name;
+            chartSelect.appendChild(opt);
+        });
+        chartSelect.value = 'All';
+    }
+    // Repopulate history chart person select
+    const historyChartSelect = document.getElementById('history-chart-person');
+    if (historyChartSelect) {
+        historyChartSelect.innerHTML = '';
+        const allOpt2 = document.createElement('option');
+        allOpt2.value = 'All';
+        allOpt2.textContent = 'All';
+        historyChartSelect.appendChild(allOpt2);
+        members.forEach(name => {
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name;
+            historyChartSelect.appendChild(opt);
+        });
+        historyChartSelect.value = 'All';
+    }
+    // Re‑render settings lists
+    renderSettings();
+    // Re‑render summary and charts
+    renderSummary();
+    const person = document.getElementById('chart-person-select') ? document.getElementById('chart-person-select').value : 'All';
+    renderCategoryChart(person || 'All');
+    // Re‑render expenses list and history
+    renderExpensesList();
+    renderHistory();
 }
 
 // NOTE: The previous localStorage persistence functions (saveExpenses, saveHandovers)
@@ -767,7 +1217,7 @@ function generateSummaryTableHTML(summary) {
 
 // Show the specified page and hide others.  Update nav link active state.
 function showPage(page) {
-    ['dashboard','expenses','history','handover'].forEach(id => {
+    ['dashboard','expenses','history','handover','settings'].forEach(id => {
         const section = document.getElementById(id);
         if (section) {
             if (id === page) {
@@ -806,6 +1256,11 @@ function showPage(page) {
     if (page === 'handover') {
         document.getElementById('handover-summary').innerHTML = '';
         document.getElementById('confirm-handover').classList.add('d-none');
+    }
+
+    // When entering settings page, render lists
+    if (page === 'settings') {
+        renderSettings();
     }
 }
 
@@ -976,8 +1431,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Initialize Supabase (fetch env variables) and load remote data
     await initSupabase();
     await loadData();
-
-    // Populate selects for forms and filters
+    // Load members and categories from DB
+    await loadMembersAndCategories();
+    // Populate selects for forms and filters based on loaded members/categories
     populateSelect('category', categories);
     populateSelect('payment', paymentMethods);
     populateSelect('payer', members);
@@ -985,42 +1441,54 @@ document.addEventListener('DOMContentLoaded', async () => {
     populateResponsibleCheckboxes('responsible-options', ['All']);
     // Populate filters
     const payerFilter = document.getElementById('filter-payer');
-    members.forEach(name => {
-        const opt = document.createElement('option');
-        opt.value = name;
-        opt.textContent = name;
-        payerFilter.appendChild(opt);
-    });
+    if (payerFilter) {
+        payerFilter.innerHTML = '<option value="">All</option>';
+        members.forEach(name => {
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name;
+            payerFilter.appendChild(opt);
+        });
+    }
     const categoryFilter = document.getElementById('filter-category');
-    categories.forEach(cat => {
-        const opt = document.createElement('option');
-        opt.value = cat;
-        opt.textContent = cat;
-        categoryFilter.appendChild(opt);
-    });
+    if (categoryFilter) {
+        categoryFilter.innerHTML = '<option value="">All</option>';
+        categories.forEach(cat => {
+            const opt = document.createElement('option');
+            opt.value = cat;
+            opt.textContent = cat;
+            categoryFilter.appendChild(opt);
+        });
+    }
     const responsibleFilter = document.getElementById('filter-responsible');
-    members.forEach(name => {
-        const opt = document.createElement('option');
-        opt.value = name;
-        opt.textContent = name;
-        responsibleFilter.appendChild(opt);
-    });
+    if (responsibleFilter) {
+        responsibleFilter.innerHTML = '<option value="">All</option>';
+        members.forEach(name => {
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name;
+            responsibleFilter.appendChild(opt);
+        });
+    }
     // Populate chart person select (for dashboard)
     const chartSelect = document.getElementById('chart-person-select');
-    const allOptSel = document.createElement('option');
-    allOptSel.value = 'All';
-    allOptSel.textContent = 'All';
-    chartSelect.appendChild(allOptSel);
-    members.forEach(name => {
-        const opt = document.createElement('option');
-        opt.value = name;
-        opt.textContent = name;
-        chartSelect.appendChild(opt);
-    });
-    chartSelect.addEventListener('change', () => {
-        const person = chartSelect.value;
-        renderCategoryChart(person);
-    });
+    if (chartSelect) {
+        chartSelect.innerHTML = '';
+        const allOptSel = document.createElement('option');
+        allOptSel.value = 'All';
+        allOptSel.textContent = 'All';
+        chartSelect.appendChild(allOptSel);
+        members.forEach(name => {
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name;
+            chartSelect.appendChild(opt);
+        });
+        chartSelect.addEventListener('change', () => {
+            const person = chartSelect.value;
+            renderCategoryChart(person);
+        });
+    }
     // Navigation click handlers
     document.querySelectorAll('.navbar .nav-link').forEach(link => {
         link.addEventListener('click', e => {
@@ -1029,8 +1497,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             showPage(page);
         });
     });
-    // Form submission
+    // Form submission for adding expenses
     document.getElementById('expense-form').addEventListener('submit', addExpense);
+    // Settings forms for members and categories
+    const addMemberForm = document.getElementById('add-member-form');
+    if (addMemberForm) addMemberForm.addEventListener('submit', addMember);
+    const addCategoryForm = document.getElementById('add-category-form');
+    if (addCategoryForm) addCategoryForm.addEventListener('submit', addCategory);
     // Filter change handlers
     document.getElementById('filter-payer').addEventListener('change', renderExpensesList);
     document.getElementById('filter-category').addEventListener('change', renderExpensesList);
@@ -1053,4 +1526,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Set default chart to overall
     chartSelect.value = 'All';
     renderCategoryChart('All');
+    // Render settings page lists initially
+    renderSettings();
 });
