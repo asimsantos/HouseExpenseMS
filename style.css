@@ -14,3 +14,12 @@ body {
     font-weight: 600;
     text-decoration: underline;
 }
+
+/* Hide edit buttons in the Settings page lists (members and categories).
+   Even if the JavaScript inserts an Edit button, this CSS ensures it is
+   not visible. Only the Delete buttons remain visible for managing names
+   and categories. */
+#members-list .btn-outline-secondary,
+#categories-list .btn-outline-secondary {
+    display: none !important;
+}
