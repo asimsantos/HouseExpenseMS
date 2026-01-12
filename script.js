@@ -175,36 +175,31 @@ function renderSettings() {
     // Clear existing entries
     membersList.innerHTML = '';
     categoriesList.innerHTML = '';
-    // Helper to create list items with edit/delete actions
-    function createListItem(name, onEdit, onDelete) {
+    // Helper to create list items with delete action only.  Editing is disabled.
+    function createListItem(name, onDelete) {
         const li = document.createElement('li');
         li.className = 'list-group-item d-flex justify-content-between align-items-center';
         const span = document.createElement('span');
         span.textContent = name;
         const actions = document.createElement('div');
         actions.className = 'btn-group btn-group-sm';
-        const editBtn = document.createElement('button');
-        editBtn.className = 'btn btn-outline-secondary';
-        editBtn.textContent = 'Edit';
-        editBtn.addEventListener('click', () => onEdit(name));
         const deleteBtn = document.createElement('button');
         deleteBtn.className = 'btn btn-outline-danger';
         deleteBtn.textContent = 'Delete';
         deleteBtn.addEventListener('click', () => onDelete(name));
-        actions.appendChild(editBtn);
         actions.appendChild(deleteBtn);
         li.appendChild(span);
         li.appendChild(actions);
         return li;
     }
-    // Populate members list
+    // Populate members list (only delete option)
     members.forEach(name => {
-        const li = createListItem(name, editMember, deleteMember);
+        const li = createListItem(name, deleteMember);
         membersList.appendChild(li);
     });
-    // Populate categories list
+    // Populate categories list (only delete option)
     categories.forEach(name => {
-        const li = createListItem(name, editCategory, deleteCategory);
+        const li = createListItem(name, deleteCategory);
         categoriesList.appendChild(li);
     });
 }
